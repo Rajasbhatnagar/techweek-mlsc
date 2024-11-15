@@ -21,7 +21,7 @@ class SkillExtractorML:
         except Exception as e:
             print(f"Error loading model or tokenizer: {e}")
             raise
-
+ 
         self.skills = {
             "frontend developer": ["JavaScript", "React.js", "HTML/CSS", "Bootstrap", "Tailwind CSS"],
             "backend developer": ["Node.js", "Express.js", "SQL", "NoSQL"],
@@ -81,6 +81,14 @@ def pdf_reader(file):
     fake_file_handle.close()
     
     return text
+
+@app.route('/')
+def home():
+    return "Welcome to the Skill Mingle API!"
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204  # Placeholder for favicon requests
 
 @app.route('/upload_resume', methods=['POST'])
 def upload_resume():
