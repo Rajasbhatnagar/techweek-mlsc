@@ -1,4 +1,6 @@
-from flask import Flask, request, jsonify
+import os
+import spacy
+from flask import Flask, jsonify
 from flask_cors import CORS
 import torch
 from transformers import BertTokenizer, BertModel
@@ -13,6 +15,14 @@ from pdfminer.converter import TextConverter
 app = Flask(__name__)
 CORS(app, origins="http://localhost:5173")
 
+# Ensure spaCy model is installed
+try:
+    spacy.load("en_core_web_sm")
+except Exception as e:
+    print(f"Error loading SpaCy model: {e}. Installing the model...")
+    os.system("python -m spacy download en_core_web_sm")
+
+
 class SkillExtractorML:
     def __init__(self):
         try:
@@ -21,7 +31,7 @@ class SkillExtractorML:
         except Exception as e:
             print(f"Error loading model or tokenizer: {e}")
             raise
- 
+
         self.skills = {
             "frontend developer": ["JavaScript", "React.js", "HTML/CSS", "Bootstrap", "Tailwind CSS"],
             "backend developer": ["Node.js", "Express.js", "SQL", "NoSQL"],
@@ -64,56 +74,86 @@ class SkillExtractorML:
         threshold = 0.7
         return [skill for skill, sim in zip(self.general_skills, similarities) if sim > threshold]
 
+
 extractor = SkillExtractorML()
 
-def pdf_reader(file):
+
+def pdf_reader(file_path):
     resource_manager = PDFResourceManager()
     fake_file_handle = io.StringIO()
     converter = TextConverter(resource_manager, fake_file_handle, laparams=LAParams())
     page_interpreter = PDFPageInterpreter(resource_manager, converter)
 
-    with file.stream as fh:
-        for page in PDFPage.get_pages(fh, caching=True, check_extractable=True):
+    with open(file_path, 'rb') as file:
+        for page in PDFPage.get_pages(file, caching=True, check_extractable=True):
             page_interpreter.process_page(page)
         text = fake_file_handle.getvalue()
 
     converter.close()
     fake_file_handle.close()
-    
+
     return text
 
-@app.route('/')
-def home():
-    return "Welcome to the Skill Mingle API!"
 
-@app.route('/favicon.ico')
-def favicon():
-    return '', 204  # Placeholder for favicon requests
+def setup_pyresparser_config():
+    config_path = os.path.expanduser("~/.pyresparser")
+    os.makedirs(config_path, exist_ok=True)
+    config_file = os.path.join(config_path, "config.cfg")
+    
+    # Create a valid config file if not already present
+    if not os.path.exists(config_file):
+        with open(config_file, 'w') as file:
+            file.write(
+                "[DEFAULT]\n"
+                "DEBUG=False\n"
+                "SKILLS_FILE=/path/to/skills.json\n"
+                "NAME_REGEX=[A-Za-z]+ [A-Za-z]+\n"
+                "EMAIL_REGEX=[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+\n"
+                "PHONE_REGEX=\+?[1-9][0-9]{7,14}\n"
+                "LOCATION_REGEX=[A-Za-z]+(?: [A-Za-z]+)*\n"
+            )
+        print(f"Config file created at {config_file}. Please update 'SKILLS_FILE' with the correct path.")
 
-@app.route('/upload_resume', methods=['POST'])
-def upload_resume():
-    if 'pdf_file' not in request.files:
-        return jsonify({'error': 'No PDF file uploaded'}), 400
 
-    pdf_file = request.files['pdf_file']
-    resume_text = pdf_reader(pdf_file)
+def process_resume(file_path, job_title):
+    try:
+        if not os.path.exists(file_path):
+            return {'error': f"File '{file_path}' not found."}
 
-    with open("uploaded_resume.pdf", "wb") as f:
-        pdf_file.seek(0)  # reset file pointer
-        f.write(pdf_file.read())
+        # Read resume content
+        resume_text = pdf_reader(file_path)
 
-    resume_data = ResumeParser("uploaded_resume.pdf").get_extracted_data()
-    extracted_skills = resume_data.get("skills", []) if resume_data else []
+        # Parse the resume using pyresparser
+        setup_pyresparser_config()  # Ensure config is set up
+        resume_data = ResumeParser(file_path).get_extracted_data()
+        extracted_skills = resume_data.get("skills", []) if resume_data else []
 
-    job_title = request.form.get('job_title', '')
-    if not job_title:
-        return jsonify({'error': 'Job title is required'}), 400
+        if not job_title:
+            return {'error': 'Job title is required'}
 
-    recommended_skills = extractor.extract_skills(job_title, extracted_skills)
-    return jsonify({
-        'extracted_skills': extracted_skills,
-        'recommended_skills': recommended_skills
-    })
+        recommended_skills = extractor.extract_skills(job_title, extracted_skills)
+        return {
+            'extracted_skills': extracted_skills,
+            'recommended_skills': recommended_skills
+        }
+    except Exception as e:
+        return {'error': str(e)}
+
+
+@app.route('/process_resume/<job_title>/<path:file_path>', methods=['GET'])
+def process_resume_endpoint(job_title, file_path):
+    result = process_resume(file_path, job_title)
+    return jsonify(result)
+
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # Test the function directly by providing file path and job title
+    file_path = "resume-BJhEUnPK.pdf"  # Replace with the path to your test PDF file
+    job_title = "frontend developer"  # Replace with your test job title
+
+    if os.path.exists(file_path):
+        result = process_resume(file_path, job_title)
+        print("Processed Resume Output:")
+        print(result)
+    else:
+        print(f"Error: File '{file_path}' not found.")
